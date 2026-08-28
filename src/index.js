@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { pingMongo } from "./lib/mongo.js";
-import { config } from "./config.js";
+import { config, isAllowedCorsOrigin } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { adminRouter } from "./routes/admin.js";
 import { carriersRouter } from "./routes/carriers.js";
@@ -14,15 +14,15 @@ const app = express();
 app.use(
   cors({
     origin(origin, callback) {
-      const allowed = new Set([config.frontendOrigin, config.adminOrigin]);
-      if (!origin || /localhost|127\.0\.0\.1/.test(origin) || allowed.has(origin)) {
+      if (isAllowedCorsOrigin(origin)) {
         callback(null, true);
         return;
       }
-      callback(new Error("Not allowed by CORS"));
+      callback(null, false);
     },
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-client-now"],
+    optionsSuccessStatus: 204,
   }),
 );
 app.use(express.json({ limit: "2mb" }));

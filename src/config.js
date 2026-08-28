@@ -2,9 +2,19 @@ import "dotenv/config";
 
 const maxRange = Number.parseInt(process.env.MAX_MC_RANGE || "10000", 10);
 
+function parseList(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((item) => item.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
+const frontendOrigin = (process.env.FRONTEND_ORIGIN || "http://localhost:3000").trim().replace(/\/$/, "");
+const adminOrigin = (process.env.ADMIN_ORIGIN || "http://localhost:3001").trim().replace(/\/$/, "");
+
 export const config = {
   port: Number.parseInt(process.env.PORT || "4000", 10),
-  frontendOrigin: process.env.FRONTEND_ORIGIN || "http://localhost:3000",
+  frontendOrigin,
   socrataDomain: (process.env.SOCRATA_DOMAIN || "https://data.transportation.gov").replace(/\/$/, ""),
   datasetId: process.env.SOCRATA_DATASET_ID || "az4n-8mr2",
   appToken: process.env.SOCRATA_APP_TOKEN || "",
@@ -19,7 +29,7 @@ export const config = {
   authEmail: (process.env.AUTH_EMAIL || "").trim().toLowerCase(),
   authPassword: process.env.AUTH_PASSWORD || "",
   authName: (process.env.AUTH_NAME || "Dispatcher").trim(),
-  adminOrigin: process.env.ADMIN_ORIGIN || "http://localhost:3001",
+  adminOrigin,
   authAdminEmail: (process.env.AUTH_ADMIN_EMAIL || "").trim().toLowerCase(),
   authAdminPassword: process.env.AUTH_ADMIN_PASSWORD || "",
   authAdminName: (process.env.AUTH_ADMIN_NAME || "Admin").trim(),
@@ -30,4 +40,22 @@ export const config = {
   googleOAuthRedirectUri:
     (process.env.GOOGLE_OAUTH_REDIRECT_URI || "").trim() ||
     `http://localhost:${Number.parseInt(process.env.PORT || "4000", 10)}/api/email/oauth/callback`,
+  corsOrigins: [
+    ...new Set([
+      frontendOrigin,
+      adminOrigin,
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "https://mcscrapperfrontend.vercel.app",
+      "https://mcscrapperadmin.vercel.app",
+      ...parseList(process.env.CORS_ORIGINS),
+    ]),
+  ],
 };
+
+export function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  const normalized = String(origin).trim().replace(/\/$/, "");
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalized)) return true;
+  return config.corsOrigins.includes(normalized);
+}
