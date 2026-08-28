@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "id": "adcd9e3c-f7fc-4529-927e-67abb53964fc",
+      "mcNumber": 100047,
+      "mcDisplay": "MC-100047",
+      "dotNumber": 1041593,
+      "legalName": "YACHT WORKS INC",
+      "kind": "report",
+      "tags": [
+        "Misrepresented"
+      ],
+      "note": "YACHT WORKS INC (MC-100047) misrepresented their equipment availability on a load I dispatched last week — they confirmed a 53' dry van but showed up with a 48' flatbed that couldn't handle the freight. My desk had to scramble to find a replacement carrier while the customer's shipment sat at the shipper.",
+      "dispatcher": null,
+      "createdAt": "2026-08-20T00:22:45.898Z",
+      "published": true
+    }
+  ]
+}
