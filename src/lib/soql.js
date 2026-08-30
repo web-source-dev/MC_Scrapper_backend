@@ -17,26 +17,24 @@ function docketActive(prefixField, numberField, statusField) {
   ].join(" AND ");
 }
 
-function docketInRange(prefixField, numberField, statusField, startMc, endMc, strictSafer) {
-  const parts = [
+function docketInRange(prefixField, numberField, statusField, startMc, endMc) {
+  return [
     `${prefixField} = 'MC'`,
     `${numberField} IS NOT NULL`,
     `${numberField} != ''`,
     `${numberField}::number >= ${startMc}`,
     `${numberField}::number <= ${endMc}`,
-  ];
-  if (strictSafer) parts.push(`${statusField} = 'A'`);
-  return parts.join(" AND ");
+    `${statusField} = 'A'`,
+  ].join(" AND ");
 }
 
-function docketInList(prefixField, numberField, statusField, numbers, strictSafer) {
+function docketInList(prefixField, numberField, statusField, numbers) {
   const list = numbers.map((value) => sqlString(value)).join(", ");
-  const parts = [
+  return [
     `${prefixField} = 'MC'`,
     `${numberField} IN (${list})`,
-  ];
-  if (strictSafer) parts.push(`${statusField} = 'A'`);
-  return parts.join(" AND ");
+    `${statusField} = 'A'`,
+  ].join(" AND ");
 }
 
 function anyActiveMc() {
@@ -59,14 +57,13 @@ function modeClause(filters) {
     state,
     city,
     phone,
-    strictSafer,
   } = filters;
 
   if (searchMode === "mc-range") {
     return `(${[
-      `(${docketInRange("docket1prefix", "docket1", "docket1_status_code", startMc, endMc, strictSafer)})`,
-      `(${docketInRange("docket2prefix", "docket2", "docket2_status_code", startMc, endMc, strictSafer)})`,
-      `(${docketInRange("docket3prefix", "docket3", "docket3_status_code", startMc, endMc, strictSafer)})`,
+      `(${docketInRange("docket1prefix", "docket1", "docket1_status_code", startMc, endMc)})`,
+      `(${docketInRange("docket2prefix", "docket2", "docket2_status_code", startMc, endMc)})`,
+      `(${docketInRange("docket3prefix", "docket3", "docket3_status_code", startMc, endMc)})`,
     ].join(" OR ")})`;
   }
 
@@ -75,9 +72,9 @@ function modeClause(filters) {
       return `dot_number = ${identifier}`;
     }
     return `(${[
-      `(docket1prefix = 'MC' AND docket1 = ${sqlString(identifier)})`,
-      `(docket2prefix = 'MC' AND docket2 = ${sqlString(identifier)})`,
-      `(docket3prefix = 'MC' AND docket3 = ${sqlString(identifier)})`,
+      `(docket1prefix = 'MC' AND docket1 = ${sqlString(identifier)} AND docket1_status_code = 'A')`,
+      `(docket2prefix = 'MC' AND docket2 = ${sqlString(identifier)} AND docket2_status_code = 'A')`,
+      `(docket3prefix = 'MC' AND docket3 = ${sqlString(identifier)} AND docket3_status_code = 'A')`,
     ].join(" OR ")})`;
   }
 
@@ -86,9 +83,9 @@ function modeClause(filters) {
       return `dot_number IN (${idList.join(", ")})`;
     }
     return `(${[
-      `(${docketInList("docket1prefix", "docket1", "docket1_status_code", idList, strictSafer)})`,
-      `(${docketInList("docket2prefix", "docket2", "docket2_status_code", idList, strictSafer)})`,
-      `(${docketInList("docket3prefix", "docket3", "docket3_status_code", idList, strictSafer)})`,
+      `(${docketInList("docket1prefix", "docket1", "docket1_status_code", idList)})`,
+      `(${docketInList("docket2prefix", "docket2", "docket2_status_code", idList)})`,
+      `(${docketInList("docket3prefix", "docket3", "docket3_status_code", idList)})`,
     ].join(" OR ")})`;
   }
 
@@ -146,11 +143,12 @@ export function buildWhereClause(filters) {
     clauses.push("upper(classdef) LIKE '%AUTHORIZED FOR HIRE%'");
     clauses.push(`(prior_revoke_flag IS NULL OR prior_revoke_flag != 'Y')`);
     clauses.push(`NOT (mcsipstep IN (${OOS_MCSIP_STEPS.map(sqlString).join(", ")}))`);
-    if (searchMode !== "mc-range" && searchMode !== "id-list") {
-      clauses.push(anyActiveMc());
-    }
   } else if (!isExactLookup) {
     clauses.push("phy_country = 'US'");
+  }
+
+  if (searchMode !== "mc-range" && searchMode !== "id-list" && searchMode !== "mc-lookup") {
+    clauses.push(anyActiveMc());
   }
 
   if (searchMode !== "location" && state) {

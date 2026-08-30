@@ -117,12 +117,16 @@ function activeMcSlots(row) {
   return dockets(row).filter((item) => item.prefix === "MC" && item.number != null);
 }
 
+function activeMcSlotsOnly(row) {
+  return activeMcSlots(row).filter((slot) => slot.status === "A");
+}
+
 export function pickMc(row, filters = {}) {
-  const slots = activeMcSlots(row);
+  const slots = activeMcSlotsOnly(row);
   const { startMc, endMc, idList = [], identifier, identifierType, searchMode } = filters;
 
   if (searchMode === "mc-range" && startMc != null && endMc != null) {
-    const match = slots.find((slot) => slot.status === "A" && slot.number >= startMc && slot.number <= endMc);
+    const match = slots.find((slot) => slot.number >= startMc && slot.number <= endMc);
     if (match) return match.number;
   }
 
@@ -130,10 +134,15 @@ export function pickMc(row, filters = {}) {
     const wanted = searchMode === "mc-lookup" ? [Number(identifier)] : idList.map(Number);
     const match = slots.find((slot) => wanted.includes(slot.number));
     if (match) return match.number;
+    return null;
   }
 
-  const active = slots.find((slot) => slot.status === "A");
-  return active?.number ?? slots[0]?.number ?? null;
+  return slots[0]?.number ?? null;
+}
+
+export function isActiveForSearch(row, filters = {}) {
+  if (row.status_code !== "A") return false;
+  return pickMc(row, filters) != null;
 }
 
 export function mapCarrier(row, filters = {}) {

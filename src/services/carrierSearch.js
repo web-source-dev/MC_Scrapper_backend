@@ -1,5 +1,5 @@
 import { SELECT_FIELDS } from "../lib/equipment.js";
-import { mapCarrier } from "../lib/censusMap.js";
+import { isActiveForSearch, mapCarrier } from "../lib/censusMap.js";
 import { buildWhereClause, orderClause } from "../lib/soql.js";
 import { querySoda21, querySoda3 } from "./socrataClient.js";
 import { fetchQcSnapshot, isQcMobileConfigured } from "./qcmobile.js";
@@ -91,7 +91,9 @@ export async function searchCarriers(filters) {
     order: orderClause(filters.searchMode),
   });
 
-  const mapped = rows
+  const activeRows = rows.filter((row) => isActiveForSearch(row, filters));
+
+  const mapped = activeRows
     .map((row) => mapCarrier(row, filters))
     .sort((a, b) => {
       if (a.mcNumber && b.mcNumber) return a.mcNumber - b.mcNumber;
