@@ -14,7 +14,7 @@ import {
   signOAuthState,
   verifyOAuthState,
 } from "../lib/gmail.js";
-import { config } from "../config.js";
+import { config, isAllowedCorsOrigin } from "../config.js";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -130,6 +130,21 @@ async function loadAccountForSend(userId, accountId) {
   return account;
 }
 
+function oauthSetupWarning() {
+  try {
+    const redirectHost = new URL(getOAuthRedirectUri()).hostname;
+    const frontendHost = new URL(config.frontendOrigin).hostname;
+    const frontendLocal = /^(localhost|127\.0\.0\.1)$/i.test(frontendHost);
+    const redirectLocal = /^(localhost|127\.0\.0\.1)$/i.test(redirectHost);
+    if (frontendLocal && !redirectLocal) {
+      return `Gmail callback is ${getOAuthRedirectUri()}, but this desk is on ${config.frontendOrigin}. Accounts are saved on that remote API, so local send will show 0 connected. For local use set GOOGLE_OAUTH_REDIRECT_URI=http://localhost:${config.port}/api/email/oauth/callback and add that URI in Google Cloud.`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 export async function getEmailStatus(req, res) {
   const userId = uid(req);
   await seedTemplates(userId);
@@ -139,11 +154,13 @@ export async function getEmailStatus(req, res) {
   res.json({
     ok: true,
     connected: accounts.length > 0,
+    accountCount: accounts.length,
     account: safeAccount(defaultAccount),
     accounts: accounts.map(safeAccount),
     oauthAvailable: isGoogleOAuthConfigured(),
     oauthMissing: googleOAuthMissingKeys(),
     redirectUri: getOAuthRedirectUri(),
+    setupWarning: oauthSetupWarning(),
     templates: templates.map(safeTemplate),
     variables: [
       { key: "company", label: "Company", token: "{{company}}" },
@@ -171,29 +188,52 @@ export async function getOAuthUrl(req, res) {
       "OAUTH_NOT_CONFIGURED",
     );
   }
-  const state = signOAuthState(uid(req));
+  let returnOrigin = String(req.query?.returnOrigin || "").trim().replace(/\/$/, "");
+  if (!returnOrigin || !isAllowedCorsOrigin(returnOrigin)) {
+    returnOrigin = config.frontendOrigin;
+  }
+  const state = signOAuthState(uid(req), { returnOrigin });
   res.json({
     ok: true,
     url: buildGoogleAuthUrl(state),
     redirectUri: getOAuthRedirectUri(),
+    returnOrigin,
+    setupWarning: oauthSetupWarning(),
   });
 }
 
 export async function oauthCallback(req, res) {
-  const fail = (message) => {
-    const url = new URL(config.frontendOrigin);
+  const fail = (message, returnOrigin) => {
+    const origin =
+      returnOrigin && isAllowedCorsOrigin(returnOrigin)
+        ? String(returnOrigin).replace(/\/$/, "")
+        : config.frontendOrigin;
+    const url = new URL(origin);
     url.searchParams.set("gmail", "error");
-    url.searchParams.set("page", "templates");
+    url.searchParams.set("page", "gmail");
     url.searchParams.set("message", String(message || "OAuth failed").slice(0, 280));
     return res.redirect(302, url.toString());
   };
 
   try {
     const { code, state, error, error_description: errorDescription } = req.query || {};
-    if (error) return fail(errorDescription || error);
-    if (!code || !state) return fail("Missing OAuth code");
+    let returnOrigin = "";
+    if (state) {
+      try {
+        returnOrigin = verifyOAuthState(state).returnOrigin || "";
+      } catch {
+        /* ignore until full verify below */
+      }
+    }
+    if (error) return fail(errorDescription || error, returnOrigin);
+    if (!code || !state) return fail("Missing OAuth code", returnOrigin);
 
-    const { userId } = verifyOAuthState(state);
+    const verified = verifyOAuthState(state);
+    const { userId } = verified;
+    returnOrigin =
+      verified.returnOrigin && isAllowedCorsOrigin(verified.returnOrigin)
+        ? String(verified.returnOrigin).replace(/\/$/, "")
+        : config.frontendOrigin;
     const tokens = await exchangeGoogleCode(String(code));
     const profile = await fetchGoogleProfile(tokens.access_token);
     const email = String(profile.email).toLowerCase();
@@ -204,10 +244,11 @@ export async function oauthCallback(req, res) {
     let refreshTokenEnc = encryptSecret(tokens.refresh_token || "");
     if (!tokens.refresh_token) {
       if (existing?.refreshTokenEnc) refreshTokenEnc = existing.refreshTokenEnc;
-      else return fail("Google did not return a refresh token. Remove app access and try again.");
+      else return fail("Google did not return a refresh token. Remove app access and try again.", returnOrigin);
     }
 
     const now = new Date();
+    const existingCount = await col.countDocuments({ userId: owner });
     const payload = {
       userId: owner,
       email,
@@ -216,7 +257,7 @@ export async function oauthCallback(req, res) {
       refreshTokenEnc,
       accessTokenEnc: encryptSecret(tokens.access_token),
       accessTokenExpiresAt: new Date(Date.now() + (Number(tokens.expires_in) || 3600) * 1000),
-      isDefault: existing?.isDefault || false,
+      isDefault: existing?.isDefault || existingCount === 0,
       connectedAt: now,
       updatedAt: now,
     };
@@ -230,10 +271,10 @@ export async function oauthCallback(req, res) {
     const hasDefault = await col.findOne({ userId: owner, isDefault: true });
     if (!hasDefault) await ensureDefaultAccount(owner);
 
-    const url = new URL(config.frontendOrigin);
+    const url = new URL(returnOrigin);
     url.searchParams.set("gmail", "ok");
     url.searchParams.set("email", profile.email);
-    url.searchParams.set("page", "templates");
+    url.searchParams.set("page", "gmail");
     return res.redirect(302, url.toString());
   } catch (error) {
     return fail(error.message || "OAuth failed");

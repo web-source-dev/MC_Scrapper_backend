@@ -30,9 +30,13 @@ export function getOAuthRedirectUri() {
   return env("GOOGLE_OAUTH_REDIRECT_URI", config.googleOAuthRedirectUri);
 }
 
-export function signOAuthState(userId) {
+export function signOAuthState(userId, meta = {}) {
   const payload = Buffer.from(
-    JSON.stringify({ userId: String(userId), exp: Date.now() + 15 * 60 * 1000 }),
+    JSON.stringify({
+      userId: String(userId),
+      exp: Date.now() + 15 * 60 * 1000,
+      returnOrigin: meta.returnOrigin ? String(meta.returnOrigin).replace(/\/$/, "") : "",
+    }),
     "utf8",
   ).toString("base64url");
   const sig = createHmac("sha256", config.emailSecret).update(payload).digest("base64url");
