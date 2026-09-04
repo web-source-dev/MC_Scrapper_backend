@@ -71,7 +71,7 @@ app.listen(config.port, async () => {
   await migrateUserDefaults().catch(() => null);
   const seed = await seedAuthUser().catch((error) => ({ seeded: false, reason: error.message }));
   const admin = await seedAdminUser().catch((error) => ({ seeded: false, reason: error.message }));
-  console.log(`MC Scrapper API listening on http://localhost:${config.port}`);
+  console.log(`MC Finder API listening on http://localhost:${config.port}`);
   if (seed.seeded) console.log(`Seeded dispatcher login for ${seed.email}`);
   if (admin.seeded) console.log(`Seeded admin login for ${admin.email}`);
 });

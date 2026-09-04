@@ -80,7 +80,7 @@ export async function briefCarrier(carrier, snapshot) {
       Authorization: `Bearer ${config.openRouterApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": config.frontendOrigin,
-      "X-Title": "Carrier Verifier",
+      "X-Title": "MC Finder",
     },
     body: JSON.stringify({
       model: config.openRouterModel,
@@ -202,7 +202,7 @@ export async function draftReport(carrier, words) {
       Authorization: `Bearer ${config.openRouterApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": config.frontendOrigin,
-      "X-Title": "Carrier Verifier",
+      "X-Title": "MC Finder",
     },
     body: JSON.stringify({
       model: config.openRouterModel,
