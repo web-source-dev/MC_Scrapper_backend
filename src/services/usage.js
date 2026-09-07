@@ -1,5 +1,5 @@
 import { getDb } from "../lib/mongo.js";
-import { dailyLimitFor, planPublic } from "../lib/plans.js";
+import { dailyLimitFor, monthlyLimitFor, planPublic } from "../lib/plans.js";
 import { config } from "../config.js";
 
 function httpError(message, status = 400, code = null) {
@@ -16,6 +16,10 @@ export function todayKey(at = new Date()) {
     month: "2-digit",
     day: "2-digit",
   }).format(at);
+}
+
+export function monthKey(at = new Date()) {
+  return todayKey(at).slice(0, 7);
 }
 
 export function clockPayload() {
@@ -58,16 +62,40 @@ export function countMatchedMcs(carriers) {
   return carriers.length;
 }
 
+export async function monthUsed(userId, month = monthKey()) {
+  const rows = await (
+    await usageCol()
+  )
+    .find({
+      userId,
+      date: { $gte: `${month}-01`, $lte: `${month}-31` },
+    })
+    .project({ used: 1, _id: 0 })
+    .toArray();
+  return rows.reduce((sum, row) => sum + Math.max(0, Number(row.used) || 0), 0);
+}
+
 export async function usageSnapshot(user) {
   const date = todayKey();
-  const limit = dailyLimitFor(user);
-  const row = await (await usageCol()).findOne({ userId: user._id, date });
-  const used = Math.max(0, Number(row?.used) || 0);
-  const remaining = Math.max(0, limit - used);
+  const month = monthKey();
+  const dailyLimit = dailyLimitFor(user);
+  const monthlyLimit = monthlyLimitFor(user);
+  const [row, usedThisMonth] = await Promise.all([
+    (await usageCol()).findOne({ userId: user._id, date }),
+    monthUsed(user._id, month),
+  ]);
+  const usedToday = Math.max(0, Number(row?.used) || 0);
+  const remainingDaily = Math.max(0, dailyLimit - usedToday);
+  const remainingMonthly = Math.max(0, monthlyLimit - usedThisMonth);
+  const remaining = Math.min(remainingDaily, remainingMonthly);
   return {
     ...planPublic(user),
     date,
-    usedToday: used,
+    month,
+    usedToday,
+    usedThisMonth,
+    remainingDaily,
+    remainingMonthly,
     remaining,
   };
 }
@@ -114,12 +142,37 @@ export async function usageByUserIds(userIds, date = todayKey()) {
   return new Map(rows.map((row) => [String(row.userId), Math.max(0, Number(row.used) || 0)]));
 }
 
+export async function monthUsedByUserIds(userIds, month = monthKey()) {
+  if (!userIds.length) return new Map();
+  const rows = await (
+    await usageCol()
+  )
+    .aggregate([
+      {
+        $match: {
+          userId: { $in: userIds },
+          date: { $gte: `${month}-01`, $lte: `${month}-31` },
+        },
+      },
+      { $group: { _id: "$userId", used: { $sum: "$used" } } },
+    ])
+    .toArray();
+  return new Map(rows.map((row) => [String(row._id), Math.max(0, Number(row.used) || 0)]));
+}
+
 export async function assertCanSearch(user) {
   const snap = await usageSnapshot(user);
-  if (snap.dailyLimit <= 0) {
-    throw httpError("This account has no daily MC search allowance.", 403, "QUOTA_EXCEEDED");
+  if (snap.dailyLimit <= 0 || snap.monthlyLimit <= 0) {
+    throw httpError("This account has no MC search allowance.", 403, "QUOTA_EXCEEDED");
   }
-  if (snap.remaining <= 0) {
+  if (snap.remainingMonthly <= 0) {
+    throw httpError(
+      `Monthly MC limit reached (${snap.usedThisMonth.toLocaleString()} / ${snap.monthlyLimit.toLocaleString()} on ${snap.planName}). Resets next month.`,
+      429,
+      "QUOTA_EXCEEDED",
+    );
+  }
+  if (snap.remainingDaily <= 0) {
     throw httpError(
       `Daily MC limit reached (${snap.usedToday.toLocaleString()} / ${snap.dailyLimit.toLocaleString()} on ${snap.planName}). Try again tomorrow.`,
       429,

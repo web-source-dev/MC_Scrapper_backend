@@ -208,9 +208,8 @@ export async function oauthCallback(req, res) {
       returnOrigin && isAllowedCorsOrigin(returnOrigin)
         ? String(returnOrigin).replace(/\/$/, "")
         : config.frontendOrigin;
-    const url = new URL(origin);
+    const url = new URL(`${origin}/gmail`);
     url.searchParams.set("gmail", "error");
-    url.searchParams.set("page", "gmail");
     url.searchParams.set("message", String(message || "OAuth failed").slice(0, 280));
     return res.redirect(302, url.toString());
   };
@@ -271,10 +270,9 @@ export async function oauthCallback(req, res) {
     const hasDefault = await col.findOne({ userId: owner, isDefault: true });
     if (!hasDefault) await ensureDefaultAccount(owner);
 
-    const url = new URL(returnOrigin);
+    const url = new URL(`${returnOrigin}/gmail`);
     url.searchParams.set("gmail", "ok");
     url.searchParams.set("email", profile.email);
-    url.searchParams.set("page", "gmail");
     return res.redirect(302, url.toString());
   } catch (error) {
     return fail(error.message || "OAuth failed");

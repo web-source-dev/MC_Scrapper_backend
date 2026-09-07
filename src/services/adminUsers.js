@@ -2,7 +2,7 @@ import { ObjectId } from "mongodb";
 import bcrypt from "bcryptjs";
 import { getDb } from "../lib/mongo.js";
 import { isPlanId, planPublic, PLANS } from "../lib/plans.js";
-import { todayTotals, usageByUserIds, usageSnapshot } from "./usage.js";
+import { todayTotals, usageByUserIds, monthUsedByUserIds, usageSnapshot } from "./usage.js";
 
 const BCRYPT_ROUNDS = 12;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -49,11 +49,13 @@ function normalizePlan(plan) {
   return id;
 }
 
-function normalizeCustomLimit(plan, value) {
+function normalizeCustomLimit(plan, value, kind = "daily") {
   if (plan !== "custom") return null;
   const parsed = Number.parseInt(String(value ?? ""), 10);
-  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1_000_000) {
-    throw httpError("Custom daily limit must be between 1 and 1,000,000 MCs");
+  const label = kind === "monthly" ? "monthly" : "daily";
+  const max = kind === "monthly" ? 5_000_000 : 1_000_000;
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > max) {
+    throw httpError(`Custom ${label} limit must be between 1 and ${max.toLocaleString()} MCs`);
   }
   return parsed;
 }
@@ -88,21 +90,33 @@ function asIso(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function shapeUser(user, usedToday = 0) {
+function shapeUser(user, usedToday = 0, usedThisMonth = 0) {
   const plan = planPublic(user);
   const dailyLimit = asCount(plan.dailyLimit);
+  const monthlyLimit = asCount(plan.monthlyLimit);
   const used = asCount(usedToday);
-  const remaining = Math.max(0, dailyLimit - used);
+  const monthUsed = asCount(usedThisMonth);
+  const remainingDaily = Math.max(0, dailyLimit - used);
+  const remainingMonthly = Math.max(0, monthlyLimit - monthUsed);
+  const remaining = Math.min(remainingDaily, remainingMonthly);
   return {
     id: String(user._id),
     email: user.email,
     name: user.name || "Dispatcher",
+    company: user.company || null,
+    phone: user.phone || null,
+    jobTitle: user.jobTitle || null,
     role: user.role === "admin" ? "admin" : "dispatcher",
     plan: plan.plan,
     planName: plan.planName,
     dailyLimit,
+    monthlyLimit,
     customDailyLimit: plan.plan === "custom" ? dailyLimit : user.customDailyLimit || null,
+    customMonthlyLimit: plan.plan === "custom" ? monthlyLimit : user.customMonthlyLimit || null,
     usedToday: used,
+    usedThisMonth: monthUsed,
+    remainingDaily,
+    remainingMonthly,
     remaining,
     banned: Boolean(user.banned),
     bannedAt: asIso(user.bannedAt),
@@ -119,8 +133,11 @@ export function listPlans() {
 export async function listUsers() {
   const collection = await users();
   const docs = await collection.find({}).sort({ createdAt: -1 }).toArray();
-  const usedMap = await usageByUserIds(docs.map((doc) => doc._id));
-  return docs.map((doc) => shapeUser(doc, usedMap.get(String(doc._id)) || 0));
+  const ids = docs.map((doc) => doc._id);
+  const [usedMap, monthMap] = await Promise.all([usageByUserIds(ids), monthUsedByUserIds(ids)]);
+  return docs.map((doc) =>
+    shapeUser(doc, usedMap.get(String(doc._id)) || 0, monthMap.get(String(doc._id)) || 0),
+  );
 }
 
 export async function adminStats() {
@@ -147,7 +164,8 @@ export async function createUser(body) {
   const password = normalizePassword(body.password);
   const role = normalizeRole(body.role);
   const plan = normalizePlan(body.plan);
-  const customDailyLimit = normalizeCustomLimit(plan, body.customDailyLimit);
+  const customDailyLimit = normalizeCustomLimit(plan, body.customDailyLimit, "daily");
+  const customMonthlyLimit = normalizeCustomLimit(plan, body.customMonthlyLimit, "monthly");
 
   if (!EMAIL_RE.test(email)) throw httpError("Enter a valid email");
 
@@ -163,12 +181,13 @@ export async function createUser(body) {
     role,
     plan,
     customDailyLimit,
+    customMonthlyLimit,
     banned: false,
     sessionId: null,
     createdAt: new Date(),
   };
   const result = await collection.insertOne(doc);
-  return shapeUser({ ...doc, _id: result.insertedId }, 0);
+  return shapeUser({ ...doc, _id: result.insertedId }, 0, 0);
 }
 
 export async function updateUser(id, body, actorId) {
@@ -181,9 +200,23 @@ export async function updateUser(id, body, actorId) {
   if (body.name != null) patch.name = normalizeName(body.name);
   if (body.plan != null) {
     patch.plan = normalizePlan(body.plan);
-    patch.customDailyLimit = normalizeCustomLimit(patch.plan, body.customDailyLimit ?? user.customDailyLimit);
-  } else if (body.customDailyLimit != null && (body.plan || user.plan) === "custom") {
-    patch.customDailyLimit = normalizeCustomLimit("custom", body.customDailyLimit);
+    patch.customDailyLimit = normalizeCustomLimit(
+      patch.plan,
+      body.customDailyLimit ?? user.customDailyLimit,
+      "daily",
+    );
+    patch.customMonthlyLimit = normalizeCustomLimit(
+      patch.plan,
+      body.customMonthlyLimit ?? user.customMonthlyLimit,
+      "monthly",
+    );
+  } else if ((body.plan || user.plan) === "custom") {
+    if (body.customDailyLimit != null) {
+      patch.customDailyLimit = normalizeCustomLimit("custom", body.customDailyLimit, "daily");
+    }
+    if (body.customMonthlyLimit != null) {
+      patch.customMonthlyLimit = normalizeCustomLimit("custom", body.customMonthlyLimit, "monthly");
+    }
   }
   if (body.role != null) {
     const role = normalizeRole(body.role);
@@ -203,7 +236,7 @@ export async function updateUser(id, body, actorId) {
   await collection.updateOne({ _id }, { $set: patch });
   const next = await collection.findOne({ _id });
   const snap = await usageSnapshot(next);
-  return shapeUser(next, snap.usedToday);
+  return shapeUser(next, snap.usedToday, snap.usedThisMonth);
 }
 
 export async function setBanned(id, banned, reason, actorId) {
@@ -241,7 +274,7 @@ export async function setBanned(id, banned, reason, actorId) {
 
   const next = await collection.findOne({ _id });
   const snap = await usageSnapshot(next);
-  return shapeUser(next, snap.usedToday);
+  return shapeUser(next, snap.usedToday, snap.usedThisMonth);
 }
 
 export async function setPassword(id, password) {
@@ -254,5 +287,5 @@ export async function setPassword(id, password) {
   await revokeSessions(_id);
   const next = await collection.findOne({ _id });
   const snap = await usageSnapshot(next);
-  return shapeUser(next, snap.usedToday);
+  return shapeUser(next, snap.usedToday, snap.usedThisMonth);
 }

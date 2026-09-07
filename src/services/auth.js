@@ -24,12 +24,20 @@ export async function publicUser(user) {
     id: String(user._id),
     email: user.email,
     name: user.name || "Dispatcher",
+    company: user.company || null,
+    phone: user.phone || null,
+    jobTitle: user.jobTitle || null,
     role: user.role === "admin" ? "admin" : "dispatcher",
     plan: usage.plan,
     planName: usage.planName,
     dailyLimit: usage.dailyLimit,
+    monthlyLimit: usage.monthlyLimit,
     usedToday: usage.usedToday,
+    usedThisMonth: usage.usedThisMonth,
+    remainingDaily: usage.remainingDaily,
+    remainingMonthly: usage.remainingMonthly,
     remaining: usage.remaining,
+    month: usage.month,
     date: usage.date,
     timezone: usage.timezone,
     serverNow: usage.serverNow,
@@ -98,6 +106,98 @@ export async function seedAdminUser() {
   });
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const JOB_TITLES = new Set(["dispatcher", "broker", "carrier_ops", "owner", "other"]);
+
+function normalizeSignupText(value, { required, label, max = 120 }) {
+  const text = String(value || "").trim().replace(/\s+/g, " ").slice(0, max);
+  if (required && !text) throw httpError(`Enter your ${label}`);
+  return text || null;
+}
+
+function normalizePhone(value) {
+  const raw = String(value || "").trim();
+  if (!raw) throw httpError("Enter a phone number");
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) {
+    throw httpError("Enter a valid phone number");
+  }
+  return raw.slice(0, 40);
+}
+
+function normalizeJobTitle(value) {
+  const key = String(value || "dispatcher").trim().toLowerCase();
+  return JOB_TITLES.has(key) ? key : "dispatcher";
+}
+
+export async function signup({ email, password, name, company, phone, jobTitle, userAgent, ip }) {
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
+  const pass = String(password || "");
+  const displayName = normalizeSignupText(name, { required: true, label: "full name", max: 80 });
+  const companyName = normalizeSignupText(company, { required: true, label: "company name", max: 120 });
+  const phoneNumber = normalizePhone(phone);
+  const title = normalizeJobTitle(jobTitle);
+
+  if (!normalized || !EMAIL_RE.test(normalized)) {
+    throw httpError("Enter a valid email");
+  }
+  if (pass.length < 8) {
+    throw httpError("Password must be at least 8 characters");
+  }
+
+  const collection = await users();
+  const existing = await collection.findOne({ email: normalized });
+  if (existing) {
+    throw httpError("That email is already in use", 409, "EMAIL_TAKEN");
+  }
+
+  const passwordHash = await bcrypt.hash(pass, BCRYPT_ROUNDS);
+  const doc = {
+    email: normalized,
+    name: displayName,
+    company: companyName,
+    phone: phoneNumber,
+    jobTitle: title,
+    passwordHash,
+    role: "dispatcher",
+    plan: "free",
+    customDailyLimit: null,
+    customMonthlyLimit: null,
+    banned: false,
+    sessionId: null,
+    createdAt: new Date(),
+  };
+  const result = await collection.insertOne(doc);
+  const user = { ...doc, _id: result.insertedId };
+
+  return createSessionForUser(user, { userAgent, ip });
+}
+
+async function createSessionForUser(user, { userAgent, ip }) {
+  const token = randomBytes(TOKEN_BYTES).toString("base64url");
+  const session = {
+    id: randomBytes(16).toString("hex"),
+    userId: user._id,
+    tokenHash: hashToken(token),
+    userAgent: String(userAgent || "").slice(0, 300) || null,
+    ip: ip || null,
+    createdAt: new Date(),
+    revoked: false,
+  };
+
+  const sessionCol = await sessions();
+  await sessionCol.updateMany({ userId: user._id }, { $set: { revoked: true } });
+  await sessionCol.insertOne(session);
+  await (await users()).updateOne({ _id: user._id }, { $set: { sessionId: session.id, lastLoginAt: new Date() } });
+
+  return {
+    token,
+    user: await publicUser(user),
+  };
+}
+
 export async function login({ email, password, userAgent, ip, audience }) {
   const normalized = String(email || "")
     .trim()
@@ -126,26 +226,7 @@ export async function login({ email, password, userAgent, ip, audience }) {
     throw httpError("This sign-in is for administrators only.", 403, "FORBIDDEN");
   }
 
-  const token = randomBytes(TOKEN_BYTES).toString("base64url");
-  const session = {
-    id: randomBytes(16).toString("hex"),
-    userId: user._id,
-    tokenHash: hashToken(token),
-    userAgent: String(userAgent || "").slice(0, 300) || null,
-    ip: ip || null,
-    createdAt: new Date(),
-    revoked: false,
-  };
-
-  const sessionCol = await sessions();
-  await sessionCol.updateMany({ userId: user._id }, { $set: { revoked: true } });
-  await sessionCol.insertOne(session);
-  await collection.updateOne({ _id: user._id }, { $set: { sessionId: session.id, lastLoginAt: new Date() } });
-
-  return {
-    token,
-    user: await publicUser(user),
-  };
+  return createSessionForUser(user, { userAgent, ip });
 }
 
 export async function logout(token) {
