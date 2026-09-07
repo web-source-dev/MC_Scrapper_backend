@@ -55,7 +55,6 @@ authRouter.post("/auth/signup", async (req, res, next) => {
       name: body.name,
       company: body.company,
       phone: body.phone,
-      jobTitle: body.jobTitle,
       userAgent: req.headers["user-agent"],
       ip,
     });

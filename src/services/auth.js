@@ -26,7 +26,6 @@ export async function publicUser(user) {
     name: user.name || "Dispatcher",
     company: user.company || null,
     phone: user.phone || null,
-    jobTitle: user.jobTitle || null,
     role: user.role === "admin" ? "admin" : "dispatcher",
     plan: usage.plan,
     planName: usage.planName,
@@ -107,7 +106,6 @@ export async function seedAdminUser() {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const JOB_TITLES = new Set(["dispatcher", "broker", "carrier_ops", "owner", "other"]);
 
 function normalizeSignupText(value, { required, label, max = 120 }) {
   const text = String(value || "").trim().replace(/\s+/g, " ").slice(0, max);
@@ -125,12 +123,7 @@ function normalizePhone(value) {
   return raw.slice(0, 40);
 }
 
-function normalizeJobTitle(value) {
-  const key = String(value || "dispatcher").trim().toLowerCase();
-  return JOB_TITLES.has(key) ? key : "dispatcher";
-}
-
-export async function signup({ email, password, name, company, phone, jobTitle, userAgent, ip }) {
+export async function signup({ email, password, name, company, phone, userAgent, ip }) {
   const normalized = String(email || "")
     .trim()
     .toLowerCase();
@@ -138,7 +131,6 @@ export async function signup({ email, password, name, company, phone, jobTitle, 
   const displayName = normalizeSignupText(name, { required: true, label: "full name", max: 80 });
   const companyName = normalizeSignupText(company, { required: true, label: "company name", max: 120 });
   const phoneNumber = normalizePhone(phone);
-  const title = normalizeJobTitle(jobTitle);
 
   if (!normalized || !EMAIL_RE.test(normalized)) {
     throw httpError("Enter a valid email");
@@ -159,7 +151,6 @@ export async function signup({ email, password, name, company, phone, jobTitle, 
     name: displayName,
     company: companyName,
     phone: phoneNumber,
-    jobTitle: title,
     passwordHash,
     role: "dispatcher",
     plan: "free",

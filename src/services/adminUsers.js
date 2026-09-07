@@ -105,7 +105,6 @@ function shapeUser(user, usedToday = 0, usedThisMonth = 0) {
     name: user.name || "Dispatcher",
     company: user.company || null,
     phone: user.phone || null,
-    jobTitle: user.jobTitle || null,
     role: user.role === "admin" ? "admin" : "dispatcher",
     plan: plan.plan,
     planName: plan.planName,
