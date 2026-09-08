@@ -1,3 +1,5 @@
+import { FEATURES, featuresForPlan, resolveFeatures } from "./features.js";
+
 export const PLANS = [
   { id: "free", name: "Free", dailyLimit: 1000, monthlyLimit: 30000 },
   { id: "standard", name: "Standard", dailyLimit: 5000, monthlyLimit: 150000 },
@@ -41,6 +43,7 @@ export function planPublic(user) {
     planName: plan.name,
     dailyLimit: dailyLimitFor(user),
     monthlyLimit: monthlyLimitFor(user),
+    features: resolveFeatures(user),
   };
 }
 
@@ -50,5 +53,10 @@ export function publicPlans() {
     name: plan.name,
     dailyLimit: plan.dailyLimit,
     monthlyLimit: plan.monthlyLimit,
+    features: featuresForPlan(plan.id),
   }));
+}
+
+export function featureCatalog() {
+  return FEATURES;
 }

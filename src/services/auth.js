@@ -1,16 +1,24 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { getDb } from "../lib/mongo.js";
 import { config } from "../config.js";
 import { deskUsage, assertClientClock } from "./usage.js";
+import { normalizeEmail, validateLogin, validateSignup } from "../lib/credentials.js";
+import { mailboxDomainError } from "../lib/mailboxDomain.js";
+import { sendSignupOtp } from "../lib/mailer.js";
 
 const TOKEN_BYTES = 32;
 const BCRYPT_ROUNDS = 12;
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_RESEND_MS = 45 * 1000;
+const OTP_MAX_SENDS = 6;
+const OTP_MAX_ATTEMPTS = 8;
 
-function httpError(message, status = 400, code = null) {
+function httpError(message, status = 400, code = null, field = null) {
   const error = new Error(message);
   error.status = status;
   if (code) error.code = code;
+  if (field) error.field = field;
   return error;
 }
 
@@ -31,6 +39,7 @@ export async function publicUser(user) {
     planName: usage.planName,
     dailyLimit: usage.dailyLimit,
     monthlyLimit: usage.monthlyLimit,
+    features: usage.features || [],
     usedToday: usage.usedToday,
     usedThisMonth: usage.usedThisMonth,
     remainingDaily: usage.remainingDaily,
@@ -53,6 +62,30 @@ async function users() {
 
 async function sessions() {
   return (await getDb()).collection("sessions");
+}
+
+async function signupOtps() {
+  return (await getDb()).collection("signup_otps");
+}
+
+function hashOtp(email, otp) {
+  return createHash("sha256").update(`${config.emailSecret}:${email}:${otp}`).digest("hex");
+}
+
+function otpEqual(left, right) {
+  const a = Buffer.from(String(left || ""), "utf8");
+  const b = Buffer.from(String(right || ""), "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function publicOtpState(email, expiresAt, lastSentAt = new Date()) {
+  const resendAt = new Date(lastSentAt.getTime() + OTP_RESEND_MS);
+  return {
+    email,
+    expiresIn: Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / 1000)),
+    resendIn: Math.max(0, Math.ceil((resendAt.getTime() - Date.now()) / 1000)),
+  };
 }
 
 export async function migrateUserDefaults() {
@@ -79,6 +112,7 @@ async function seedAccount({ email, password, name, role, plan }) {
     plan,
     customDailyLimit: null,
     banned: false,
+    emailVerified: true,
     createdAt: new Date(),
     sessionId: null,
   });
@@ -105,64 +139,189 @@ export async function seedAdminUser() {
   });
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export async function startSignup({ email, password, name, company, phone, ip }) {
+  const checked = validateSignup({ email, password, name, company, phone });
+  if (!checked.ok) {
+    const field = Object.keys(checked.errors)[0];
+    const error = httpError(checked.errors[field], 400, "INVALID_INPUT", field);
+    error.errors = checked.errors;
+    throw error;
+  }
 
-function normalizeSignupText(value, { required, label, max = 120 }) {
-  const text = String(value || "").trim().replace(/\s+/g, " ").slice(0, max);
-  if (required && !text) throw httpError(`Enter your ${label}`);
-  return text || null;
+  const { values } = checked;
+  const domain = values.email.split("@")[1];
+  const mailboxError = await mailboxDomainError(domain);
+  if (mailboxError) {
+    const error = httpError(mailboxError, 400, "INVALID_INPUT", "email");
+    error.errors = { email: mailboxError };
+    throw error;
+  }
+
+  const collection = await users();
+  const existing = await collection.findOne({ email: values.email });
+  if (existing) {
+    throw httpError("That email is already in use", 409, "EMAIL_TAKEN", "email");
+  }
+
+  const pendingCol = await signupOtps();
+  const pending = await pendingCol.findOne({ email: values.email });
+  const now = new Date();
+  if (pending?.lastSentAt && now - pending.lastSentAt < OTP_RESEND_MS) {
+    const wait = Math.ceil((OTP_RESEND_MS - (now - pending.lastSentAt)) / 1000);
+    const error = httpError(`Wait ${wait}s before requesting another code`, 429, "OTP_COOLDOWN");
+    error.resendIn = wait;
+    throw error;
+  }
+  if (pending && pending.sendCount >= OTP_MAX_SENDS) {
+    const last = pending.lastSentAt ? new Date(pending.lastSentAt).getTime() : 0;
+    if (Date.now() - last < 15 * 60 * 1000) {
+      throw httpError("Too many codes sent to this email. Try again later.", 429, "OTP_LOCKED");
+    }
+    pending.sendCount = 0;
+    await pendingCol.updateOne({ email: values.email }, { $set: { sendCount: 0 } });
+  }
+
+  const otp = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  const expiresAt = new Date(now.getTime() + OTP_TTL_MS);
+  const passwordHash = await bcrypt.hash(values.password, BCRYPT_ROUNDS);
+  await pendingCol.updateOne(
+    { email: values.email },
+    {
+      $set: {
+        email: values.email,
+        name: values.name,
+        company: values.company,
+        phone: values.phone,
+        passwordHash,
+        otpHash: hashOtp(values.email, otp),
+        expiresAt,
+        attempts: 0,
+        ip: ip || null,
+      },
+      $setOnInsert: { createdAt: now, sendCount: 0 },
+    },
+    { upsert: true },
+  );
+
+  try {
+    await sendSignupOtp({ to: values.email, code: otp, name: values.name });
+  } catch (error) {
+    console.error("[signup] verification email failed:", error.message);
+    if (error.status) throw error;
+    throw httpError("We couldn't send a verification email. Try again later.", 503, "MAIL_FAILED");
+  }
+
+  await pendingCol.updateOne(
+    { email: values.email },
+    { $set: { lastSentAt: now }, $inc: { sendCount: 1 } },
+  );
+
+  return { ok: true, needsVerification: true, ...publicOtpState(values.email, expiresAt, now) };
 }
 
-function normalizePhone(value) {
-  const raw = String(value || "").trim();
-  if (!raw) throw httpError("Enter a phone number");
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length < 7 || digits.length > 15) {
-    throw httpError("Enter a valid phone number");
+export async function resendSignupOtp({ email, ip }) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) throw httpError("Enter your email", 400, "INVALID_INPUT", "email");
+
+  const pendingCol = await signupOtps();
+  const pending = await pendingCol.findOne({ email: normalized });
+  if (!pending) {
+    throw httpError("Start signup again to get a new code.", 400, "OTP_MISSING");
   }
-  return raw.slice(0, 40);
+
+  const now = new Date();
+  if (pending.lastSentAt && now - pending.lastSentAt < OTP_RESEND_MS) {
+    const wait = Math.ceil((OTP_RESEND_MS - (now - pending.lastSentAt)) / 1000);
+    const error = httpError(`Wait ${wait}s before requesting another code`, 429, "OTP_COOLDOWN");
+    error.resendIn = wait;
+    throw error;
+  }
+  if ((pending.sendCount || 0) >= OTP_MAX_SENDS) {
+    throw httpError("Too many codes sent to this email. Try again later.", 429, "OTP_LOCKED");
+  }
+
+  const otp = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  const expiresAt = new Date(now.getTime() + OTP_TTL_MS);
+  await pendingCol.updateOne(
+    { email: normalized },
+    {
+      $set: {
+        otpHash: hashOtp(normalized, otp),
+        expiresAt,
+        attempts: 0,
+        ip: ip || pending.ip || null,
+      },
+    },
+  );
+
+  try {
+    await sendSignupOtp({ to: normalized, code: otp, name: pending.name });
+  } catch (error) {
+    console.error("[signup] resend email failed:", error.message);
+    if (error.status) throw error;
+    throw httpError("We couldn't send a verification email. Try again later.", 503, "MAIL_FAILED");
+  }
+
+  await pendingCol.updateOne(
+    { email: normalized },
+    { $set: { lastSentAt: now }, $inc: { sendCount: 1 } },
+  );
+
+  return { ok: true, ...publicOtpState(normalized, expiresAt, now) };
 }
 
-export async function signup({ email, password, name, company, phone, userAgent, ip }) {
-  const normalized = String(email || "")
-    .trim()
-    .toLowerCase();
-  const pass = String(password || "");
-  const displayName = normalizeSignupText(name, { required: true, label: "full name", max: 80 });
-  const companyName = normalizeSignupText(company, { required: true, label: "company name", max: 120 });
-  const phoneNumber = normalizePhone(phone);
+export async function verifySignup({ email, otp, userAgent, ip }) {
+  const normalized = normalizeEmail(email);
+  const code = String(otp || "").replace(/\D/g, "");
+  if (!normalized) throw httpError("Enter your email", 400, "INVALID_INPUT", "email");
+  if (!/^\d{6}$/.test(code)) throw httpError("Enter the 6-digit code from your email", 400, "INVALID_INPUT", "otp");
 
-  if (!normalized || !EMAIL_RE.test(normalized)) {
-    throw httpError("Enter a valid email");
+  const pendingCol = await signupOtps();
+  const pending = await pendingCol.findOne({ email: normalized });
+  if (!pending) {
+    throw httpError("That code is wrong or has expired", 400, "OTP_INVALID", "otp");
   }
-  if (pass.length < 8) {
-    throw httpError("Password must be at least 8 characters");
+  if (pending.expiresAt && pending.expiresAt.getTime() < Date.now()) {
+    await pendingCol.deleteOne({ email: normalized });
+    throw httpError("That code has expired. Request a new one.", 400, "OTP_EXPIRED", "otp");
+  }
+  if ((pending.attempts || 0) >= OTP_MAX_ATTEMPTS) {
+    throw httpError("Too many tries. Request a new code.", 429, "OTP_LOCKED", "otp");
+  }
+
+  const expected = pending.otpHash;
+  const actual = hashOtp(normalized, code);
+  if (!otpEqual(expected, actual)) {
+    await pendingCol.updateOne({ email: normalized }, { $inc: { attempts: 1 } });
+    throw httpError("That code is wrong or has expired", 400, "OTP_INVALID", "otp");
   }
 
   const collection = await users();
   const existing = await collection.findOne({ email: normalized });
   if (existing) {
-    throw httpError("That email is already in use", 409, "EMAIL_TAKEN");
+    await pendingCol.deleteOne({ email: normalized });
+    throw httpError("That email is already in use", 409, "EMAIL_TAKEN", "email");
   }
 
-  const passwordHash = await bcrypt.hash(pass, BCRYPT_ROUNDS);
   const doc = {
-    email: normalized,
-    name: displayName,
-    company: companyName,
-    phone: phoneNumber,
-    passwordHash,
+    email: pending.email,
+    name: pending.name,
+    company: pending.company,
+    phone: pending.phone,
+    passwordHash: pending.passwordHash,
     role: "dispatcher",
     plan: "free",
     customDailyLimit: null,
     customMonthlyLimit: null,
     banned: false,
+    emailVerified: true,
+    emailVerifiedAt: new Date(),
     sessionId: null,
     createdAt: new Date(),
   };
   const result = await collection.insertOne(doc);
+  await pendingCol.deleteOne({ email: normalized });
   const user = { ...doc, _id: result.insertedId };
-
   return createSessionForUser(user, { userAgent, ip });
 }
 
@@ -190,13 +349,15 @@ async function createSessionForUser(user, { userAgent, ip }) {
 }
 
 export async function login({ email, password, userAgent, ip, audience }) {
-  const normalized = String(email || "")
-    .trim()
-    .toLowerCase();
-  const pass = String(password || "");
-  if (!normalized || !pass) {
-    throw httpError("Enter your email and password");
+  const checked = validateLogin({ email, password });
+  if (!checked.ok) {
+    const field = Object.keys(checked.errors)[0];
+    const error = httpError(checked.errors[field], 400, "INVALID_INPUT", field);
+    error.errors = checked.errors;
+    throw error;
   }
+  const normalized = checked.values.email;
+  const pass = checked.values.password;
 
   const collection = await users();
   const user = await collection.findOne({ email: normalized });

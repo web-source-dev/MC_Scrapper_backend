@@ -7,6 +7,7 @@ import { briefCarrier, draftReport, getOpenRouterModel, isOpenRouterConfigured }
 import { addReview, listReviews, REPORT_WORDS } from "../services/reviews.js";
 import { config } from "../config.js";
 import { assertCanSearch, countMatchedMcs, recordSearchUsage } from "../services/usage.js";
+import { assertSearchEntitlements } from "../lib/features.js";
 
 export const carriersRouter = Router();
 
@@ -255,6 +256,7 @@ carriersRouter.post("/verify", async (req, res, next) => {
     }
 
     const quota = await assertCanSearch(req.authUser);
+    assertSearchEntitlements(req.authUser, filters);
     filters.resultLimit = Math.min(filters.resultLimit, Math.max(1, quota.remaining));
 
     const result = await searchCarriers(filters);

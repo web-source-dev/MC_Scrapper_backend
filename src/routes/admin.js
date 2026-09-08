@@ -12,7 +12,8 @@ import {
 export const adminRouter = Router();
 
 adminRouter.get("/plans", (_req, res) => {
-  res.json({ ok: true, plans: listPlans() });
+  const payload = listPlans();
+  res.json({ ok: true, ...payload });
 });
 
 adminRouter.get("/stats", async (_req, res, next) => {

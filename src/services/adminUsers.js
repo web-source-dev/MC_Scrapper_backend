@@ -1,11 +1,12 @@
 import { ObjectId } from "mongodb";
 import bcrypt from "bcryptjs";
 import { getDb } from "../lib/mongo.js";
-import { isPlanId, planPublic, PLANS } from "../lib/plans.js";
+import { isPlanId, planPublic, PLANS, featureCatalog } from "../lib/plans.js";
+import { allFeatureIds, resolveFeatures, sanitizeFeatures } from "../lib/features.js";
 import { todayTotals, usageByUserIds, monthUsedByUserIds, usageSnapshot } from "./usage.js";
+import { emailError, normalizeEmail as canonEmail, passwordError } from "../lib/credentials.js";
 
 const BCRYPT_ROUNDS = 12;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function httpError(message, status = 400, code = null) {
   const error = new Error(message);
@@ -30,9 +31,10 @@ function parseId(id) {
 }
 
 function normalizeEmail(email) {
-  return String(email || "")
-    .trim()
-    .toLowerCase();
+  const value = canonEmail(email);
+  const error = emailError(value);
+  if (error) throw httpError(error, 400, "INVALID_INPUT", "email");
+  return value;
 }
 
 function normalizeName(name) {
@@ -49,6 +51,12 @@ function normalizePlan(plan) {
   return id;
 }
 
+function normalizeCustomFeatures(plan, value) {
+  if (plan !== "custom") return null;
+  if (value == null) return allFeatureIds();
+  return sanitizeFeatures(value);
+}
+
 function normalizeCustomLimit(plan, value, kind = "daily") {
   if (plan !== "custom") return null;
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -62,7 +70,8 @@ function normalizeCustomLimit(plan, value, kind = "daily") {
 
 function normalizePassword(password) {
   const pass = String(password || "");
-  if (pass.length < 8) throw httpError("Password must be at least 8 characters");
+  const error = passwordError(pass);
+  if (error) throw httpError(error, 400, "INVALID_INPUT", "password");
   return pass;
 }
 
@@ -112,6 +121,8 @@ function shapeUser(user, usedToday = 0, usedThisMonth = 0) {
     monthlyLimit,
     customDailyLimit: plan.plan === "custom" ? dailyLimit : user.customDailyLimit || null,
     customMonthlyLimit: plan.plan === "custom" ? monthlyLimit : user.customMonthlyLimit || null,
+    features: plan.features || [],
+    customFeatures: plan.plan === "custom" ? resolveFeatures(user) : null,
     usedToday: used,
     usedThisMonth: monthUsed,
     remainingDaily,
@@ -126,7 +137,13 @@ function shapeUser(user, usedToday = 0, usedThisMonth = 0) {
 }
 
 export function listPlans() {
-  return PLANS;
+  return {
+    plans: PLANS.map((plan) => ({
+      ...plan,
+      features: plan.id === "custom" ? [] : resolveFeatures({ plan: plan.id }),
+    })),
+    features: featureCatalog(),
+  };
 }
 
 export async function listUsers() {
@@ -165,8 +182,7 @@ export async function createUser(body) {
   const plan = normalizePlan(body.plan);
   const customDailyLimit = normalizeCustomLimit(plan, body.customDailyLimit, "daily");
   const customMonthlyLimit = normalizeCustomLimit(plan, body.customMonthlyLimit, "monthly");
-
-  if (!EMAIL_RE.test(email)) throw httpError("Enter a valid email");
+  const customFeatures = normalizeCustomFeatures(plan, body.customFeatures);
 
   const collection = await users();
   const existing = await collection.findOne({ email });
@@ -181,7 +197,9 @@ export async function createUser(body) {
     plan,
     customDailyLimit,
     customMonthlyLimit,
+    customFeatures,
     banned: false,
+    emailVerified: true,
     sessionId: null,
     createdAt: new Date(),
   };
@@ -209,12 +227,16 @@ export async function updateUser(id, body, actorId) {
       body.customMonthlyLimit ?? user.customMonthlyLimit,
       "monthly",
     );
+    patch.customFeatures = normalizeCustomFeatures(patch.plan, body.customFeatures ?? user.customFeatures);
   } else if ((body.plan || user.plan) === "custom") {
     if (body.customDailyLimit != null) {
       patch.customDailyLimit = normalizeCustomLimit("custom", body.customDailyLimit, "daily");
     }
     if (body.customMonthlyLimit != null) {
       patch.customMonthlyLimit = normalizeCustomLimit("custom", body.customMonthlyLimit, "monthly");
+    }
+    if (body.customFeatures != null) {
+      patch.customFeatures = normalizeCustomFeatures("custom", body.customFeatures);
     }
   }
   if (body.role != null) {

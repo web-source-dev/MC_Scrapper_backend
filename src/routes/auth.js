@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { bearerToken, login, logout, readSession, signup } from "../services/auth.js";
-import { publicPlans } from "../lib/plans.js";
+import { bearerToken, login, logout, readSession, resendSignupOtp, startSignup, verifySignup } from "../services/auth.js";
+import { featureCatalog, publicPlans } from "../lib/plans.js";
 
 export const authRouter = Router();
 
@@ -37,7 +37,7 @@ function noteFailure(ip) {
 }
 
 authRouter.get("/plans", (_req, res) => {
-  res.json({ ok: true, plans: publicPlans() });
+  res.json({ ok: true, plans: publicPlans(), features: featureCatalog() });
 });
 
 authRouter.post("/auth/signup", async (req, res, next) => {
@@ -49,19 +49,57 @@ authRouter.post("/auth/signup", async (req, res, next) => {
       throw error;
     }
     const body = req.body || {};
-    const result = await signup({
+    const result = await startSignup({
       email: body.email,
       password: body.password,
       name: body.name,
       company: body.company,
       phone: body.phone,
+      ip,
+    });
+    attempts.delete(ip);
+    res.status(200).json(result);
+  } catch (error) {
+    if (error.status === 409) noteFailure(clientIp(req));
+    next(error);
+  }
+});
+
+authRouter.post("/auth/signup/verify", async (req, res, next) => {
+  try {
+    const ip = clientIp(req);
+    if (blocked(ip)) {
+      const error = new Error("Too many tries. Wait a few minutes.");
+      error.status = 429;
+      throw error;
+    }
+    const body = req.body || {};
+    const result = await verifySignup({
+      email: body.email,
+      otp: body.otp,
       userAgent: req.headers["user-agent"],
       ip,
     });
     attempts.delete(ip);
     res.status(201).json({ ok: true, ...result });
   } catch (error) {
-    if (error.status === 409) noteFailure(clientIp(req));
+    if (error.status === 400 || error.status === 409) noteFailure(clientIp(req));
+    next(error);
+  }
+});
+
+authRouter.post("/auth/signup/resend", async (req, res, next) => {
+  try {
+    const ip = clientIp(req);
+    if (blocked(ip)) {
+      const error = new Error("Too many tries. Wait a few minutes.");
+      error.status = 429;
+      throw error;
+    }
+    const body = req.body || {};
+    const result = await resendSignupOtp({ email: body.email, ip });
+    res.json(result);
+  } catch (error) {
     next(error);
   }
 });

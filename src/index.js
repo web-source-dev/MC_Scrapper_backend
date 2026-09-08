@@ -8,6 +8,7 @@ import { carriersRouter } from "./routes/carriers.js";
 import { emailRouter } from "./routes/email.js";
 import { oauthCallback } from "./services/email.js";
 import { migrateUserDefaults, requireAdmin, requireAuth, seedAdminUser, seedAuthUser } from "./services/auth.js";
+import { mailStartupLine, verifyMailer } from "./lib/mailer.js";
 
 const app = express();
 
@@ -60,10 +61,16 @@ app.use((req, res) => {
 
 app.use((error, _req, res, _next) => {
   const status = error.status || 500;
+  if (status >= 500) {
+    console.error(`[api] ${status} ${error.code || "ERROR"}: ${error.message}`);
+  }
   res.status(status).json({
     ok: false,
     error: error.message || "Unexpected server error",
     code: error.code || undefined,
+    field: error.field || undefined,
+    errors: error.errors || undefined,
+    resendIn: error.resendIn || undefined,
   });
 });
 
@@ -72,6 +79,8 @@ app.listen(config.port, async () => {
   const seed = await seedAuthUser().catch((error) => ({ seeded: false, reason: error.message }));
   const admin = await seedAdminUser().catch((error) => ({ seeded: false, reason: error.message }));
   console.log(`MC Scrapper API listening on http://localhost:${config.port}`);
+  console.log(mailStartupLine());
+  await verifyMailer();
   if (seed.seeded) console.log(`Seeded dispatcher login for ${seed.email}`);
   if (admin.seeded) console.log(`Seeded admin login for ${admin.email}`);
 });

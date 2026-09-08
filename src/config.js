@@ -40,6 +40,16 @@ export const config = {
   googleOAuthRedirectUri:
     (process.env.GOOGLE_OAUTH_REDIRECT_URI || "").trim() ||
     `http://localhost:${Number.parseInt(process.env.PORT || "4000", 10)}/api/email/oauth/callback`,
+  isProduction: process.env.NODE_ENV === "production",
+  smtpHost: (process.env.SMTP_HOST || "").trim(),
+  smtpPort: Number.isFinite(Number.parseInt(process.env.SMTP_PORT || "587", 10))
+    ? Number.parseInt(process.env.SMTP_PORT || "587", 10)
+    : 587,
+  smtpSecure: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
+  smtpUser: process.env.SMTP_USER || "",
+  smtpPass: process.env.SMTP_PASS || "",
+  mailFrom: (process.env.MAIL_FROM || "MC Scrapper <noreply@mcscraper.site>").trim(),
+  resendApiKey: (process.env.RESEND_API_KEY || "").trim(),
   corsOrigins: [
     ...new Set([
       frontendOrigin,

@@ -32,6 +32,10 @@ export async function getDb() {
       ]);
       await database.collection("email_templates").createIndexes([{ key: { userId: 1, name: 1 }, unique: true }]);
       await database.collection("email_sent").createIndexes([{ key: { userId: 1, createdAt: -1 } }]);
+      await database.collection("signup_otps").createIndexes([
+        { key: { email: 1 }, unique: true },
+        { key: { expiresAt: 1 }, expireAfterSeconds: 0 },
+      ]);
       db = database;
       return database;
     })().catch((error) => {
