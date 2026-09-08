@@ -58,6 +58,7 @@ export const config = {
       "http://localhost:3001",
       "https://mcscraper.site",
       "https://www.mcscraper.site",
+      "https://admin.mcscraper.site",
       "https://mcscrapperfrontend.vercel.app",
       "https://mcscrapperadmin.vercel.app",
       ...parseList(process.env.CORS_ORIGINS),
@@ -74,4 +75,9 @@ export function isAllowedCorsOrigin(origin) {
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalized)) return true;
   if (MC_SCRAPER_ORIGIN_RE.test(normalized)) return true;
   return config.corsOrigins.includes(normalized);
+}
+
+export function resolveCorsOrigin(origin) {
+  if (!origin) return true;
+  return isAllowedCorsOrigin(origin) ? origin : false;
 }

@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { pingMongo } from "./lib/mongo.js";
-import { config, isAllowedCorsOrigin } from "./config.js";
+import { config, resolveCorsOrigin } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { adminRouter } from "./routes/admin.js";
 import { carriersRouter } from "./routes/carriers.js";
@@ -15,10 +15,12 @@ const app = express();
 app.use(
   cors({
     origin(origin, callback) {
-      if (isAllowedCorsOrigin(origin)) {
-        callback(null, true);
+      const allowed = resolveCorsOrigin(origin);
+      if (allowed) {
+        callback(null, allowed);
         return;
       }
+      console.warn(`[cors] blocked origin: ${origin}`);
       callback(null, false);
     },
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
