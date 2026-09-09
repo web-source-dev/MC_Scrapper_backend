@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { getDb } from "../lib/mongo.js";
 import { config } from "../config.js";
@@ -338,9 +338,8 @@ async function createSessionForUser(user, { userAgent, ip }) {
   };
 
   const sessionCol = await sessions();
-  await sessionCol.updateMany({ userId: user._id }, { $set: { revoked: true } });
   await sessionCol.insertOne(session);
-  await (await users()).updateOne({ _id: user._id }, { $set: { sessionId: session.id, lastLoginAt: new Date() } });
+  await (await users()).updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
 
   return {
     token,
@@ -384,11 +383,7 @@ export async function login({ email, password, userAgent, ip, audience }) {
 export async function logout(token) {
   if (!token) return;
   const sessionCol = await sessions();
-  const session = await sessionCol.findOne({ tokenHash: hashToken(token) });
-  if (!session) return;
-  await sessionCol.deleteMany({ userId: session.userId });
-  const collection = await users();
-  await collection.updateOne({ _id: session.userId, sessionId: session.id }, { $unset: { sessionId: "" } });
+  await sessionCol.deleteOne({ tokenHash: hashToken(token) });
 }
 
 export async function readSession(token) {
@@ -404,7 +399,7 @@ export async function readSession(token) {
 
   if (session.revoked) {
     await sessionCol.deleteOne({ _id: session._id });
-    throw httpError("Signed in on another device. This session was closed.", 401, "SESSION_REPLACED");
+    throw httpError("Session ended. Sign in again.", 401, "SESSION_ENDED");
   }
 
   const collection = await users();
@@ -412,13 +407,6 @@ export async function readSession(token) {
   if (!user) {
     await sessionCol.deleteOne({ _id: session._id });
     throw httpError("Session ended. Sign in again.", 401, "SESSION_ENDED");
-  }
-
-  const current = String(user.sessionId || "");
-  const mine = String(session.id || "");
-  if (!current || !mine || current.length !== mine.length || !timingSafeEqual(Buffer.from(current), Buffer.from(mine))) {
-    await sessionCol.deleteOne({ _id: session._id });
-    throw httpError("Signed in on another device. This session was closed.", 401, "SESSION_REPLACED");
   }
 
   if (user.banned) {
