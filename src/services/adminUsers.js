@@ -4,7 +4,17 @@ import { getDb } from "../lib/mongo.js";
 import { isPlanId, planPublic, PLANS, featureCatalog } from "../lib/plans.js";
 import { allFeatureIds, resolveFeatures, sanitizeFeatures } from "../lib/features.js";
 import { todayTotals, usageByUserIds, monthUsedByUserIds, usageSnapshot } from "./usage.js";
-import { emailError, normalizeEmail as canonEmail, passwordError } from "../lib/credentials.js";
+import {
+  companyError,
+  emailError,
+  nameError,
+  normalizeCompany,
+  normalizeEmail as canonEmail,
+  normalizePersonName,
+  normalizePhone,
+  passwordError,
+  phoneError,
+} from "../lib/credentials.js";
 
 const BCRYPT_ROUNDS = 12;
 
@@ -38,7 +48,25 @@ function normalizeEmail(email) {
 }
 
 function normalizeName(name) {
-  return String(name || "").trim().slice(0, 80) || "Dispatcher";
+  const error = nameError(name);
+  if (error) throw httpError(error, 400, "INVALID_INPUT", "name");
+  return normalizePersonName(name);
+}
+
+function normalizeCompanyField(value) {
+  const error = companyError(value);
+  if (error) throw httpError(error, 400, "INVALID_INPUT", "company");
+  return normalizeCompany(value);
+}
+
+function normalizePhoneField(value) {
+  const error = phoneError(value);
+  if (error) throw httpError(error, 400, "INVALID_INPUT", "phone");
+  return normalizePhone(value);
+}
+
+async function signupOtps() {
+  return (await getDb()).collection("signup_otps");
 }
 
 function normalizeRole(role) {
@@ -181,6 +209,8 @@ export async function adminStats() {
 export async function createUser(body) {
   const email = normalizeEmail(body.email);
   const name = normalizeName(body.name);
+  const company = normalizeCompanyField(body.company);
+  const phone = normalizePhoneField(body.phone);
   const password = normalizePassword(body.password);
   const role = normalizeRole(body.role);
   const plan = normalizePlan(body.plan);
@@ -190,12 +220,16 @@ export async function createUser(body) {
 
   const collection = await users();
   const existing = await collection.findOne({ email });
-  if (existing) throw httpError("That email is already in use", 409, "EMAIL_TAKEN");
+  if (existing?.emailVerified) {
+    throw httpError("That email is already in use", 409, "EMAIL_TAKEN");
+  }
 
+  const verifiedAt = new Date();
   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-  const doc = {
-    email,
+  const profile = {
     name,
+    company,
+    phone,
     passwordHash,
     role,
     plan,
@@ -204,8 +238,21 @@ export async function createUser(body) {
     customFeatures,
     banned: false,
     emailVerified: true,
+    emailVerifiedAt: verifiedAt,
     sessionId: null,
-    createdAt: new Date(),
+  };
+
+  if (existing) {
+    await collection.updateOne({ _id: existing._id }, { $set: { ...profile, updatedAt: verifiedAt } });
+    await (await signupOtps()).deleteOne({ email });
+    const next = await collection.findOne({ _id: existing._id });
+    return shapeUser(next, 0, 0);
+  }
+
+  const doc = {
+    email,
+    ...profile,
+    createdAt: verifiedAt,
   };
   const result = await collection.insertOne(doc);
   return shapeUser({ ...doc, _id: result.insertedId }, 0, 0);
@@ -219,6 +266,8 @@ export async function updateUser(id, body, actorId) {
 
   const patch = {};
   if (body.name != null) patch.name = normalizeName(body.name);
+  if (body.company != null) patch.company = normalizeCompanyField(body.company);
+  if (body.phone != null) patch.phone = normalizePhoneField(body.phone);
   if (body.plan != null) {
     patch.plan = normalizePlan(body.plan);
     patch.customDailyLimit = normalizeCustomLimit(
