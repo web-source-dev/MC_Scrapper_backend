@@ -49,6 +49,7 @@ export const config = {
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
   mailFrom: (process.env.MAIL_FROM || "MC Scrapper <noreply@mcscraper.site>").trim(),
+  brevoApiKey: (process.env.BREVO_API_KEY || "").trim(),
   resendApiKey: (process.env.RESEND_API_KEY || "").trim(),
   corsOrigins: [
     ...new Set([

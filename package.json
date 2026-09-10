@@ -7,7 +7,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "test:email": "node scripts/test-email.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

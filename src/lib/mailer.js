@@ -22,21 +22,33 @@ function extractEmail(value) {
   return (angle ? angle[1] : raw).trim().toLowerCase();
 }
 
-export function fromAddress() {
-  const smtpUser = String(config.smtpUser || "").trim();
+export function senderParts() {
   const configured = String(config.mailFrom || "").trim();
-  if (smtpUser) {
-    const fromEmail = configured ? extractEmail(configured) : "";
-    if (!fromEmail || fromEmail !== smtpUser.toLowerCase()) {
-      return `MC Scrapper <${smtpUser}>`;
+  if (configured.includes("<")) {
+    const match = configured.match(/^(.+?)\s*<([^>]+)>$/);
+    if (match) {
+      return { name: match[1].trim() || "MC Scrapper", email: match[2].trim() };
     }
-    return configured.includes("<") ? configured : `MC Scrapper <${configured}>`;
   }
-  return configured || "MC Scrapper <noreply@mcscraper.site>";
+  if (configured) {
+    return { name: "MC Scrapper", email: configured };
+  }
+  const smtpUser = String(config.smtpUser || "").trim();
+  if (smtpUser) {
+    return { name: "MC Scrapper", email: smtpUser };
+  }
+  return { name: "MC Scrapper", email: "noreply@mcscraper.site" };
+}
+
+export function fromAddress() {
+  const { name, email } = senderParts();
+  return `${name} <${email}>`;
 }
 
 export function isMailConfigured() {
-  return Boolean(config.resendApiKey || (config.smtpHost && config.smtpUser && smtpPass()));
+  return Boolean(
+    config.brevoApiKey || config.resendApiKey || (config.smtpHost && config.smtpUser && smtpPass()),
+  );
 }
 
 function createSmtpTransport() {
@@ -50,6 +62,29 @@ function createSmtpTransport() {
     greetingTimeout: 20_000,
     socketTimeout: 20_000,
   });
+}
+
+async function sendViaBrevo({ to, subject, text, html }) {
+  const sender = senderParts();
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": config.brevoApiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      sender: { name: sender.name, email: sender.email },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+      textContent: text,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Brevo failed (${response.status}) ${body.slice(0, 220)}`);
+  }
 }
 
 async function sendViaResend({ to, subject, text, html }) {
@@ -85,10 +120,14 @@ async function sendViaSmtp({ to, subject, text, html }) {
 }
 
 function logOtpToConsole({ to, subject, text }) {
-  console.warn(`[mail] SMTP/Resend unavailable — console OTP\nTo: ${to}\nSubject: ${subject}\n${text}`);
+  console.warn(`[mail] no provider configured — console OTP\nTo: ${to}\nSubject: ${subject}\n${text}`);
 }
 
 export async function sendMail({ to, subject, text, html }) {
+  if (config.brevoApiKey) {
+    await sendViaBrevo({ to, subject, text, html });
+    return { delivered: true, via: "brevo" };
+  }
   if (config.resendApiKey) {
     await sendViaResend({ to, subject, text, html });
     return { delivered: true, via: "resend" };
@@ -150,6 +189,23 @@ export async function sendSignupOtp({ to, code, name }) {
 }
 
 export async function verifyMailer() {
+  if (config.brevoApiKey) {
+    try {
+      const response = await fetch("https://api.brevo.com/v3/account", {
+        headers: { "api-key": config.brevoApiKey, Accept: "application/json" },
+      });
+      if (response.ok) {
+        const account = await response.json().catch(() => ({}));
+        const label = account?.companyName || account?.email || "ok";
+        console.log(`[mail] Brevo connection ok (${label})`);
+      } else {
+        console.error(`[mail] Brevo verify failed (${response.status})`);
+      }
+    } catch (error) {
+      console.error("[mail] Brevo verify failed:", error.message);
+    }
+    return;
+  }
   if (config.resendApiKey) return;
   if (!(config.smtpHost && config.smtpUser && smtpPass())) return;
   try {
@@ -161,9 +217,14 @@ export async function verifyMailer() {
 }
 
 export function mailStartupLine() {
+  if (config.brevoApiKey) {
+    return `Mail: Brevo API from=${fromAddress()}`;
+  }
   if (config.resendApiKey) return "Mail: Resend";
   if (config.smtpHost && config.smtpUser && smtpPass()) {
-    return `Mail: SMTP ${config.smtpHost}:${smtpPort()} ssl=${smtpUseSsl()} from=${fromAddress()}`;
+    const host = config.smtpHost.toLowerCase();
+    const label = host.includes("brevo.com") || host.includes("sendinblue") ? "Brevo SMTP" : "SMTP";
+    return `Mail: ${label} ${config.smtpHost}:${smtpPort()} ssl=${smtpUseSsl()} from=${fromAddress()}`;
   }
-  return config.isProduction ? "Mail: not configured" : "Mail: console OTP (set SMTP or Resend)";
+  return config.isProduction ? "Mail: not configured" : "Mail: console OTP (set BREVO_API_KEY or SMTP)";
 }
