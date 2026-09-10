@@ -93,6 +93,56 @@ export async function migrateUserDefaults() {
   await collection.updateMany({ plan: { $exists: false } }, { $set: { plan: "standard" } });
   await collection.updateMany({ role: { $exists: false } }, { $set: { role: "dispatcher" } });
   await collection.updateMany({ banned: { $exists: false } }, { $set: { banned: false } });
+  await collection.updateMany({ emailVerified: { $exists: false } }, { $set: { emailVerified: true } });
+}
+
+function pendingUserDoc(values, passwordHash, now = new Date()) {
+  return {
+    email: values.email,
+    name: values.name,
+    company: values.company,
+    phone: values.phone,
+    passwordHash,
+    role: "dispatcher",
+    plan: "free",
+    customDailyLimit: null,
+    customMonthlyLimit: null,
+    banned: false,
+    emailVerified: false,
+    emailVerifiedAt: null,
+    sessionId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function upsertPendingUser(values, passwordHash) {
+  const collection = await users();
+  const existing = await collection.findOne({ email: values.email });
+  if (existing?.emailVerified) {
+    throw httpError("That email is already in use", 409, "EMAIL_TAKEN", "email");
+  }
+
+  const now = new Date();
+  if (existing) {
+    await collection.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          name: values.name,
+          company: values.company,
+          phone: values.phone,
+          passwordHash,
+          updatedAt: now,
+        },
+      },
+    );
+    return { ...existing, name: values.name, company: values.company, phone: values.phone, passwordHash };
+  }
+
+  const doc = pendingUserDoc(values, passwordHash, now);
+  const result = await collection.insertOne(doc);
+  return { ...doc, _id: result.insertedId };
 }
 
 async function seedAccount({ email, password, name, role, plan }) {
@@ -157,11 +207,8 @@ export async function startSignup({ email, password, name, company, phone, ip })
     throw error;
   }
 
-  const collection = await users();
-  const existing = await collection.findOne({ email: values.email });
-  if (existing) {
-    throw httpError("That email is already in use", 409, "EMAIL_TAKEN", "email");
-  }
+  const passwordHash = await bcrypt.hash(values.password, BCRYPT_ROUNDS);
+  const user = await upsertPendingUser(values, passwordHash);
 
   const pendingCol = await signupOtps();
   const pending = await pendingCol.findOne({ email: values.email });
@@ -183,21 +230,18 @@ export async function startSignup({ email, password, name, company, phone, ip })
 
   const otp = String(randomInt(0, 1_000_000)).padStart(6, "0");
   const expiresAt = new Date(now.getTime() + OTP_TTL_MS);
-  const passwordHash = await bcrypt.hash(values.password, BCRYPT_ROUNDS);
   await pendingCol.updateOne(
     { email: values.email },
     {
       $set: {
         email: values.email,
-        name: values.name,
-        company: values.company,
-        phone: values.phone,
-        passwordHash,
+        userId: user._id,
         otpHash: hashOtp(values.email, otp),
         expiresAt,
         attempts: 0,
         ip: ip || null,
       },
+      $unset: { name: "", company: "", phone: "", passwordHash: "" },
       $setOnInsert: { createdAt: now, sendCount: 0 },
     },
     { upsert: true },
@@ -223,20 +267,25 @@ export async function resendSignupOtp({ email, ip }) {
   const normalized = normalizeEmail(email);
   if (!normalized) throw httpError("Enter your email", 400, "INVALID_INPUT", "email");
 
-  const pendingCol = await signupOtps();
-  const pending = await pendingCol.findOne({ email: normalized });
-  if (!pending) {
+  const collection = await users();
+  const user = await collection.findOne({ email: normalized });
+  if (!user) {
     throw httpError("Start signup again to get a new code.", 400, "OTP_MISSING");
   }
+  if (user.emailVerified) {
+    throw httpError("This account is already verified. Sign in instead.", 400, "EMAIL_VERIFIED", "email");
+  }
 
+  const pendingCol = await signupOtps();
+  const pending = await pendingCol.findOne({ email: normalized });
   const now = new Date();
-  if (pending.lastSentAt && now - pending.lastSentAt < OTP_RESEND_MS) {
+  if (pending?.lastSentAt && now - pending.lastSentAt < OTP_RESEND_MS) {
     const wait = Math.ceil((OTP_RESEND_MS - (now - pending.lastSentAt)) / 1000);
     const error = httpError(`Wait ${wait}s before requesting another code`, 429, "OTP_COOLDOWN");
     error.resendIn = wait;
     throw error;
   }
-  if ((pending.sendCount || 0) >= OTP_MAX_SENDS) {
+  if (pending && (pending.sendCount || 0) >= OTP_MAX_SENDS) {
     throw httpError("Too many codes sent to this email. Try again later.", 429, "OTP_LOCKED");
   }
 
@@ -246,16 +295,20 @@ export async function resendSignupOtp({ email, ip }) {
     { email: normalized },
     {
       $set: {
+        email: normalized,
+        userId: user._id,
         otpHash: hashOtp(normalized, otp),
         expiresAt,
         attempts: 0,
-        ip: ip || pending.ip || null,
+        ip: ip || pending?.ip || null,
       },
+      $setOnInsert: { createdAt: now, sendCount: 0 },
     },
+    { upsert: true },
   );
 
   try {
-    await sendSignupOtp({ to: normalized, code: otp, name: pending.name });
+    await sendSignupOtp({ to: normalized, code: otp, name: user.name });
   } catch (error) {
     console.error("[signup] resend email failed:", error.message);
     if (error.status) throw error;
@@ -276,9 +329,18 @@ export async function verifySignup({ email, otp, userAgent, ip }) {
   if (!normalized) throw httpError("Enter your email", 400, "INVALID_INPUT", "email");
   if (!/^\d{6}$/.test(code)) throw httpError("Enter the 6-digit code from your email", 400, "INVALID_INPUT", "otp");
 
+  const collection = await users();
+  let user = await collection.findOne({ email: normalized });
+  if (user?.emailVerified) {
+    throw httpError("That email is already in use", 409, "EMAIL_TAKEN", "email");
+  }
+
   const pendingCol = await signupOtps();
   const pending = await pendingCol.findOne({ email: normalized });
   if (!pending) {
+    if (user && !user.emailVerified) {
+      throw httpError("That code has expired. Request a new one.", 400, "OTP_EXPIRED", "otp");
+    }
     throw httpError("That code is wrong or has expired", 400, "OTP_INVALID", "otp");
   }
   if (pending.expiresAt && pending.expiresAt.getTime() < Date.now()) {
@@ -296,32 +358,38 @@ export async function verifySignup({ email, otp, userAgent, ip }) {
     throw httpError("That code is wrong or has expired", 400, "OTP_INVALID", "otp");
   }
 
-  const collection = await users();
-  const existing = await collection.findOne({ email: normalized });
-  if (existing) {
-    await pendingCol.deleteOne({ email: normalized });
-    throw httpError("That email is already in use", 409, "EMAIL_TAKEN", "email");
+  const verifiedAt = new Date();
+  if (!user) {
+    if (!pending.passwordHash) {
+      throw httpError("Start signup again to get a new code.", 400, "OTP_MISSING");
+    }
+    const doc = {
+      email: pending.email || normalized,
+      name: pending.name || "Dispatcher",
+      company: pending.company || null,
+      phone: pending.phone || null,
+      passwordHash: pending.passwordHash,
+      role: "dispatcher",
+      plan: "free",
+      customDailyLimit: null,
+      customMonthlyLimit: null,
+      banned: false,
+      emailVerified: true,
+      emailVerifiedAt: verifiedAt,
+      sessionId: null,
+      createdAt: verifiedAt,
+    };
+    const result = await collection.insertOne(doc);
+    user = { ...doc, _id: result.insertedId };
+  } else {
+    await collection.updateOne(
+      { _id: user._id },
+      { $set: { emailVerified: true, emailVerifiedAt: verifiedAt, updatedAt: verifiedAt } },
+    );
+    user = { ...user, emailVerified: true, emailVerifiedAt: verifiedAt };
   }
 
-  const doc = {
-    email: pending.email,
-    name: pending.name,
-    company: pending.company,
-    phone: pending.phone,
-    passwordHash: pending.passwordHash,
-    role: "dispatcher",
-    plan: "free",
-    customDailyLimit: null,
-    customMonthlyLimit: null,
-    banned: false,
-    emailVerified: true,
-    emailVerifiedAt: new Date(),
-    sessionId: null,
-    createdAt: new Date(),
-  };
-  const result = await collection.insertOne(doc);
   await pendingCol.deleteOne({ email: normalized });
-  const user = { ...doc, _id: result.insertedId };
   return createSessionForUser(user, { userAgent, ip });
 }
 
@@ -373,6 +441,9 @@ export async function login({ email, password, userAgent, ip, audience }) {
   if (user.banned) {
     throw httpError("This account is banned. Contact an administrator.", 403, "ACCOUNT_BANNED");
   }
+  if (!user.emailVerified) {
+    throw httpError("Verify your email before signing in. Finish signup with the code we sent.", 403, "EMAIL_UNVERIFIED", "email");
+  }
   if (audience === "admin" && user.role !== "admin") {
     throw httpError("This sign-in is for administrators only.", 403, "FORBIDDEN");
   }
@@ -412,6 +483,10 @@ export async function readSession(token) {
   if (user.banned) {
     await sessionCol.updateMany({ userId: user._id }, { $set: { revoked: true } });
     throw httpError("This account is banned. Contact an administrator.", 403, "ACCOUNT_BANNED");
+  }
+  if (!user.emailVerified) {
+    await sessionCol.deleteOne({ _id: session._id });
+    throw httpError("Verify your email before using MC Scrapper.", 403, "EMAIL_UNVERIFIED");
   }
 
   return { user: await publicUser(user), sessionId: session.id, doc: user };

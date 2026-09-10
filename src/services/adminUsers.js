@@ -131,6 +131,8 @@ function shapeUser(user, usedToday = 0, usedThisMonth = 0) {
     banned: Boolean(user.banned),
     bannedAt: asIso(user.bannedAt),
     bannedReason: user.bannedReason || null,
+    emailVerified: user.emailVerified !== false,
+    emailVerifiedAt: asIso(user.emailVerifiedAt),
     createdAt: asIso(user.createdAt),
     lastLoginAt: asIso(user.lastLoginAt),
   };
@@ -158,15 +160,17 @@ export async function listUsers() {
 
 export async function adminStats() {
   const collection = await users();
-  const [total, banned, admins, usage] = await Promise.all([
+  const [total, banned, pending, admins, usage] = await Promise.all([
     collection.countDocuments({}),
     collection.countDocuments({ banned: true }),
+    collection.countDocuments({ emailVerified: false, banned: { $ne: true } }),
     collection.countDocuments({ role: "admin", banned: { $ne: true } }),
     todayTotals(),
   ]);
   return {
     users: total,
     banned,
+    pending,
     admins,
     dispatchers: total - admins,
     ...usage,

@@ -65,10 +65,15 @@ app.use((error, _req, res, _next) => {
   const status = error.status || 500;
   if (status >= 500) {
     console.error(`[api] ${status} ${error.code || "ERROR"}: ${error.message}`);
+    if (error.stack) console.error(error.stack);
   }
+  const clientMessage =
+    status >= 500
+      ? "Something went wrong on our side. Try again in a moment."
+      : error.message || "Unexpected server error";
   res.status(status).json({
     ok: false,
-    error: error.message || "Unexpected server error",
+    error: clientMessage,
     code: error.code || undefined,
     field: error.field || undefined,
     errors: error.errors || undefined,
