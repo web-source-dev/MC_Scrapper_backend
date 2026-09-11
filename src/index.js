@@ -15,6 +15,11 @@ const app = express();
 app.use(corsMiddleware);
 app.use(express.json({ limit: "2mb" }));
 
+/** Lightweight wake ping — no DB; used by frontend/admin on page load to warm free-tier hosts */
+app.get("/api/ping", (_req, res) => {
+  res.json({ ok: true, service: "mc-scrapper-backend", ts: Date.now() });
+});
+
 app.get("/api/health", async (_req, res) => {
   const mongo = await pingMongo();
   res.json({
