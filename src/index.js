@@ -1,7 +1,7 @@
 import express from "express";
-import cors from "cors";
 import { pingMongo } from "./lib/mongo.js";
-import { config, resolveCorsOrigin } from "./config.js";
+import { corsMiddleware, applyCorsHeaders, corsStartupLine } from "./lib/cors.js";
+import { config } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { adminRouter } from "./routes/admin.js";
 import { carriersRouter } from "./routes/carriers.js";
@@ -12,22 +12,7 @@ import { mailStartupLine, verifyMailer } from "./lib/mailer.js";
 
 const app = express();
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      const allowed = resolveCorsOrigin(origin);
-      if (allowed) {
-        callback(null, allowed);
-        return;
-      }
-      console.warn(`[cors] blocked origin: ${origin}`);
-      callback(null, false);
-    },
-    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-client-now"],
-    optionsSuccessStatus: 204,
-  }),
-);
+app.use(corsMiddleware);
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", async (_req, res) => {
@@ -58,10 +43,12 @@ app.use("/api/admin", requireAuth, requireAdmin, adminRouter);
 app.use("/api", requireAuth, carriersRouter);
 
 app.use((req, res) => {
+  applyCorsHeaders(req, res);
   res.status(404).json({ ok: false, error: `No route for ${req.method} ${req.path}` });
 });
 
-app.use((error, _req, res, _next) => {
+app.use((error, req, res, _next) => {
+  applyCorsHeaders(req, res);
   const status = error.status || 500;
   if (status >= 500) {
     console.error(`[api] ${status} ${error.code || "ERROR"}: ${error.message}`);
@@ -82,6 +69,7 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(config.port, async () => {
+  console.log(corsStartupLine());
   await migrateUserDefaults().catch(() => null);
   const seed = await seedAuthUser().catch((error) => ({ seeded: false, reason: error.message }));
   const admin = await seedAdminUser().catch((error) => ({ seeded: false, reason: error.message }));

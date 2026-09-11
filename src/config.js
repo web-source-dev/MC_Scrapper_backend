@@ -57,6 +57,8 @@ export const config = {
       adminOrigin,
       "http://localhost:3000",
       "http://localhost:3001",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:3001",
       "https://mcscraper.site",
       "https://www.mcscraper.site",
       "https://admin.mcscraper.site",
@@ -67,18 +69,24 @@ export const config = {
   ],
 };
 
-/** Apex + any subdomain, e.g. https://mcscraper.site or https://admin.mcscraper.site */
+/** Apex + any subdomain over HTTPS, e.g. https://mcscraper.site or https://admin.mcscraper.site */
 const MC_SCRAPER_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)*mcscraper\.site$/i;
+
+/** Optional staging/preview hosts on apexskillzone.com */
+const APEXSKILLZONE_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)*apexskillzone\.com$/i;
 
 export function isAllowedCorsOrigin(origin) {
   if (!origin) return true;
   const normalized = String(origin).trim().replace(/\/$/, "");
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalized)) return true;
   if (MC_SCRAPER_ORIGIN_RE.test(normalized)) return true;
+  if (APEXSKILLZONE_ORIGIN_RE.test(normalized)) return true;
   return config.corsOrigins.includes(normalized);
 }
 
+/** @deprecated use resolveAllowedOrigin from lib/cors.js */
 export function resolveCorsOrigin(origin) {
   if (!origin) return true;
-  return isAllowedCorsOrigin(origin) ? origin : false;
+  const normalized = String(origin).trim().replace(/\/$/, "");
+  return isAllowedCorsOrigin(normalized) ? normalized : false;
 }
