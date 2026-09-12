@@ -1,4 +1,4 @@
-import { EQUIPMENT_TYPES, OOS_MCSIP_STEPS } from "./equipment.js";
+import { CARGO_FIELDS, EQUIPMENT_TYPES, OOS_MCSIP_STEPS } from "./equipment.js";
 
 export function sqlString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
@@ -114,6 +114,7 @@ export function buildWhereClause(filters) {
   const {
     searchMode,
     equipmentTypes = [],
+    cargoTypes = [],
     minTrucks,
     maxTrucks,
     minDrivers,
@@ -167,6 +168,11 @@ export function buildWhereClause(filters) {
   if (selected.length > 0) {
     const cargoFields = [...new Set(selected.flatMap((type) => type.cargoFields))];
     clauses.push(`(${cargoFields.map((field) => `${field} = 'X'`).join(" OR ")})`);
+  }
+
+  const selectedCargo = cargoTypes.filter((field) => CARGO_FIELDS.includes(field));
+  if (selectedCargo.length > 0) {
+    clauses.push(`(${selectedCargo.map((field) => `${field} = 'X'`).join(" OR ")})`);
   }
 
   if (safetyRating === "none") {

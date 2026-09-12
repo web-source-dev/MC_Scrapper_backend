@@ -27,7 +27,7 @@ export const FEATURES = [
   {
     id: "filters_advanced",
     label: "Advanced filters",
-    blurb: "Equipment, hazmat, interstate, and truck/driver bounds.",
+    blurb: "Equipment, cargo categories, hazmat, interstate, and truck/driver bounds.",
   },
   {
     id: "priority_support",
@@ -145,6 +145,7 @@ export function assertSearchEntitlements(user, filters = {}) {
     ((Number.isFinite(minTrucks) && minTrucks > 1) || (Number.isFinite(maxTrucks) && maxTrucks > 0));
   const advancedOn =
     (Array.isArray(filters.equipmentTypes) && filters.equipmentTypes.length > 0) ||
+    (Array.isArray(filters.cargoTypes) && filters.cargoTypes.length > 0) ||
     Boolean(filters.hazmatOnly) ||
     Boolean(filters.interstateOnly) ||
     Boolean(filters.intrastateOnly) ||

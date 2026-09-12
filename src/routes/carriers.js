@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { EQUIPMENT_TYPES } from "../lib/equipment.js";
+import { CARGO_TYPES, EQUIPMENT_TYPES } from "../lib/equipment.js";
 import { FLEET_PRESETS, MCS150_OPTIONS, SAFETY_RATINGS, SEARCH_MODES, US_STATES } from "../lib/searchModes.js";
 import { enrichCarrierRecord, searchCarriers } from "../services/carrierSearch.js";
 import { getQcProxyInfo, isQcMobileConfigured } from "../services/qcmobile.js";
@@ -75,10 +75,17 @@ carriersRouter.get("/equipment-types", (_req, res) => {
   });
 });
 
+carriersRouter.get("/cargo-types", (_req, res) => {
+  res.json({
+    cargoTypes: CARGO_TYPES,
+  });
+});
+
 carriersRouter.get("/meta", (_req, res) => {
   res.json({
     searchModes: SEARCH_MODES,
     equipmentTypes: EQUIPMENT_TYPES.map(({ id, label }) => ({ id, label })),
+    cargoTypes: CARGO_TYPES,
     safetyRatings: SAFETY_RATINGS,
     fleetPresets: FLEET_PRESETS,
     mcs150Options: MCS150_OPTIONS,
@@ -165,6 +172,9 @@ carriersRouter.post("/verify", async (req, res, next) => {
     const selectedEquipment = Array.isArray(body.equipmentTypes)
       ? body.equipmentTypes.filter((id) => EQUIPMENT_TYPES.some((type) => type.id === id))
       : [];
+    const selectedCargo = Array.isArray(body.cargoTypes)
+      ? body.cargoTypes.filter((id) => CARGO_TYPES.some((type) => type.id === id))
+      : [];
     const minTrucks = parseOptionalInt(body.minTrucks, "Minimum trucks");
     const maxTrucks = parseOptionalInt(body.maxTrucks, "Maximum trucks");
     if (minTrucks != null && maxTrucks != null && maxTrucks < minTrucks) {
@@ -199,6 +209,7 @@ carriersRouter.post("/verify", async (req, res, next) => {
     const filters = {
       searchMode,
       equipmentTypes: selectedEquipment,
+      cargoTypes: selectedCargo,
       minTrucks,
       maxTrucks,
       minDrivers,

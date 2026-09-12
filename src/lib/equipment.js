@@ -110,6 +110,19 @@ export const CARGO_LABELS = {
 
 export const CARGO_FIELDS = Object.keys(CARGO_LABELS);
 
+const CARGO_FILTER_EXCLUDED = new Set([
+  "crgo_mobilehome",
+  "crgo_usmail",
+  "crgo_utility",
+  "crgo_farmsupp",
+  "crgo_waterwell",
+]);
+
+export const CARGO_TYPES = CARGO_FIELDS.filter((id) => !CARGO_FILTER_EXCLUDED.has(id)).map((id) => ({
+  id,
+  label: CARGO_LABELS[id],
+}));
+
 export const EXTRA_CENSUS_FIELDS = [
   "fax",
   "company_officer_2",
