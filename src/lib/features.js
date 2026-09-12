@@ -1,3 +1,5 @@
+import { FLEET_PRESETS } from "./searchModes.js";
+
 export const FEATURES = [
   {
     id: "search_identity",
@@ -110,6 +112,35 @@ function featureError(message) {
   return error;
 }
 
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function presetTruckBounds(presetId) {
+  const preset = FLEET_PRESETS.find((item) => item.id === presetId);
+  if (!preset || preset.id === "any") return null;
+  return {
+    min: preset.minTrucks === "" ? null : Number.parseInt(preset.minTrucks, 10),
+    max: preset.maxTrucks === "" ? null : Number.parseInt(preset.maxTrucks, 10),
+  };
+}
+
+function sameBound(left, right) {
+  return optionalNumber(left) === optionalNumber(right);
+}
+
+function isDefaultTruckBounds(minTrucks, maxTrucks) {
+  return (minTrucks == null || minTrucks === 1) && maxTrucks == null;
+}
+
+function matchesFleetPreset(minTrucks, maxTrucks, presetId) {
+  const bounds = presetTruckBounds(presetId);
+  if (!bounds) return false;
+  return sameBound(minTrucks, bounds.min) && sameBound(maxTrucks, bounds.max);
+}
+
 export function assertSearchEntitlements(user, filters = {}) {
   const features = resolveFeatures(user);
   const allowed = allowedSearchModes(features);
@@ -122,8 +153,9 @@ export function assertSearchEntitlements(user, filters = {}) {
     throw featureError("This search mode is not on your plan. Message us to change your plan.");
   }
 
-  const fleetOn = filters.fleetPreset && filters.fleetPreset !== "any";
-  const safetyOn = filters.safetyRating && filters.safetyRating !== "any";
+  const fleetPreset = String(filters.fleetPreset || "any");
+  const fleetOn = fleetPreset !== "any";
+  const safetyOn = Boolean(filters.safetyRating) && filters.safetyRating !== "any";
   const mcsOn = Boolean(filters.mcs150Months);
   if ((fleetOn || safetyOn || mcsOn) && !hasFeature(features, "filters_fleet_safety")) {
     throw featureError("Fleet and safety filters are on Standard and above. Message us to change your plan.");
@@ -138,11 +170,15 @@ export function assertSearchEntitlements(user, filters = {}) {
     throw featureError("Phone and email filters are on Standard and above. Message us to change your plan.");
   }
 
-  const minTrucks = Number(filters.minTrucks);
-  const maxTrucks = Number(filters.maxTrucks);
-  const customFleetBounds =
-    !fleetOn &&
-    ((Number.isFinite(minTrucks) && minTrucks > 1) || (Number.isFinite(maxTrucks) && maxTrucks > 0));
+  const minTrucks = optionalNumber(filters.minTrucks);
+  const maxTrucks = optionalNumber(filters.maxTrucks);
+  const minDrivers = optionalNumber(filters.minDrivers);
+  const maxDrivers = optionalNumber(filters.maxDrivers);
+  const city = String(filters.city || "").trim();
+  const zip = String(filters.zip || "").trim();
+  const customTruckBounds = !isDefaultTruckBounds(minTrucks, maxTrucks) && !matchesFleetPreset(minTrucks, maxTrucks, fleetPreset);
+  const locationCityZip = mode === "location";
+  const advancedCityZip = !locationCityZip && Boolean(city || zip);
   const advancedOn =
     (Array.isArray(filters.equipmentTypes) && filters.equipmentTypes.length > 0) ||
     (Array.isArray(filters.cargoTypes) && filters.cargoTypes.length > 0) ||
@@ -150,10 +186,10 @@ export function assertSearchEntitlements(user, filters = {}) {
     Boolean(filters.interstateOnly) ||
     Boolean(filters.intrastateOnly) ||
     Boolean(filters.freightOnly) ||
-    filters.minDrivers != null ||
-    filters.maxDrivers != null ||
-    customFleetBounds ||
-    (mode !== "location" && Boolean(filters.city || filters.zip));
+    minDrivers != null ||
+    maxDrivers != null ||
+    customTruckBounds ||
+    advancedCityZip;
 
   if (advancedOn && !hasFeature(features, "filters_advanced")) {
     throw featureError("Advanced filters are on Plus and above. Message us to change your plan.");

@@ -192,6 +192,9 @@ carriersRouter.post("/verify", async (req, res, next) => {
     const city = String(body.city || "").trim() || null;
     if (city && city.length < 2) throw httpError("City must be at least 2 characters");
 
+    const fleetPreset = FLEET_PRESETS.some((item) => item.id === body.fleetPreset)
+      ? body.fleetPreset
+      : "any";
     const safetyRating = SAFETY_RATINGS.some((item) => item.id === body.safetyRating)
       ? body.safetyRating
       : "any";
@@ -217,6 +220,7 @@ carriersRouter.post("/verify", async (req, res, next) => {
       state: state || null,
       city,
       zip: zip || null,
+      fleetPreset,
       safetyRating,
       mcs150Months,
       hazmatOnly: parseBoolean(body.hazmatOnly),
